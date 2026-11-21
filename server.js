@@ -15,7 +15,7 @@ const token = () => crypto.randomBytes(20).toString('hex');
 const safe = (v,n=80) => typeof v==='string' ? v.trim().slice(0,n).replace(/[<>]/g,'') : '';
 const reply = (ack, result) => {if(typeof ack==='function')ack(result)};
 const status = (room, player, isAdmin=false) => ({
-  code:room.code, stage:room.stage, prompt:room.stage==='lobby'?'':room.prompt,
+  code:room.code, stage:room.stage, prompt:room.prompt,
   proposed:room.prompts.length, players: [...room.players.values()].map(p=>({id:p.id,name:p.name,online:p.sockets.size,submitted:!!p.image,voted:p.votes.length===2})),
   drawingEndsAt:room.drawingEndsAt, gallery: ['presentation','voting','results'].includes(room.stage) ? [...room.players.values()].filter(p=>p.image).map(p=>({id:p.id,name:p.name,image:p.image})) : [],
   slide:room.slide, votesCast:[...room.players.values()].filter(p=>p.votes.length===2).length,
