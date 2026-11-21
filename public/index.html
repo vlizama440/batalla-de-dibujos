@@ -7,7 +7,27 @@ const storageKey='batalla-dibujos-session';const saved=()=>{try{return JSON.pars
 const persist=()=>localStorage.setItem(storageKey,JSON.stringify(identity));
 const toast=msg=>{const n=$('toast');n.textContent=msg;n.classList.remove('hidden');clearTimeout(toast.t);toast.t=setTimeout(()=>n.classList.add('hidden'),3500)};
 const emit=(event,payload={},done=()=>{})=>socket.timeout(12000).emit(event,payload,(err,res)=>{if(err){toast('No se pudo conectar. Intenta otra vez.');return}if(!res?.ok){toast(res?.error||'No se pudo completar.');return}done(res)});
-function connect(){if(!socket.connected)return; $('connection').textContent='● Conectado';let old=identity||saved();if(old){identity=old;if(old.admin)emit('admin:resume',{code:old.code,adminToken:old.adminToken},()=>{});else emit('player:join',{code:old.code,name:old.name,playerToken:old.playerToken},res=>{identity={...old,playerId:res.playerId,name:res.name};persist()});}else renderHome()}
+function connect(){
+ if(!socket.connected)return;
+ $('connection').textContent='● Conectado';
+ const old=identity||saved();
+ if(!old){renderHome();return;}
+ identity=old;
+ const event=old.admin?'admin:resume':'player:join';
+ const data=old.admin?{code:old.code,adminToken:old.adminToken}:{code:old.code,name:old.name,playerToken:old.playerToken};
+ socket.timeout(12000).emit(event,data,(err,res)=>{
+  if(err){toast('No se pudo reconectar. Actualiza la página.');renderHome();return;}
+  if(!res?.ok){
+   // The server may have restarted, so the old room/token no longer exists.
+   localStorage.removeItem(storageKey);identity=null;state=null;
+   history.replaceState({},'',location.pathname);
+   renderHome();
+   toast('La sala anterior ya no está disponible. Crea una nueva o entra con otro código.');
+   return;
+  }
+  if(!old.admin){identity={...old,playerId:res.playerId,name:res.name};persist();}
+ });
+}
 socket.on('connect',connect);socket.on('disconnect',()=>{$('connection').textContent='○ Reconectando…'});
 socket.on('state',s=>{const prev=state?.stage;const previousSelf=state?.players.find(p=>p.id===identity?.playerId)?.submitted;state=s;const isPlayer=identity&&!identity.admin;
  if(prev!==s.stage){selectedVotes=[];if(s.stage==='drawing'){drawingSent=false;}if(s.stage==='lobby'){localPromptSent=false;drawingSent=false;selectedPrompt=-1}}
@@ -63,5 +83,5 @@ function setupCanvas(){canvas=$('drawCanvas');if(!canvas)return;ctx=canvas.getCo
 }
 function eraseAll(){if(!ctx)return;if(confirm('¿Borrar todo tu dibujo?')){ctx.fillStyle='#fff';ctx.fillRect(0,0,640,480)}}
 function submitDrawing(auto){if(drawingSent||!canvas||!identity||state?.stage!=='drawing')return;const image=canvas.toDataURL('image/png');if(image.length>750000){toast('El dibujo es demasiado grande. Prueba borrar algunos trazos.');return}drawingSent=true;emit('drawing:submit',{image},()=>{if(!auto)toast('¡Dibujo enviado!')});render()}
-if(saved()){identity=saved();}else renderHome();if(socket.connected)connect();
+identity=saved();renderHome();if(socket.connected)connect();
 </script></body></html>
