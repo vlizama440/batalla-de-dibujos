@@ -16,10 +16,10 @@ const safe = (v,n=80) => typeof v==='string' ? v.trim().slice(0,n).replace(/[<>]
 const reply = (ack, result) => {if(typeof ack==='function')ack(result)};
 const status = (room, player, isAdmin=false) => ({
   code:room.code, stage:room.stage, prompt:room.prompt,
-  proposed:room.prompts.length, players: [...room.players.values()].map(p=>({id:p.id,name:p.name,online:p.sockets.size,submitted:!!p.image,voted:p.votes.length===2})),
-  drawingEndsAt:room.drawingEndsAt, gallery: ['presentation','voting','results'].includes(room.stage) ? [...room.players.values()].filter(p=>p.image).map(p=>({id:p.id,name:p.name,image:p.image})) : [],
+  proposed:room.prompts.length, players: [...room.players.values()].map(p=>({id:p.id,name:p.name,online:p.sockets.size,submitted:p.submitted,removed:p.removed,voted:p.votes.length===2})),
+  drawingEndsAt:room.drawingEndsAt, gallery: (isAdmin || ['voting','results'].includes(room.stage)) ? [...room.players.values()].filter(p=>p.image).map(p=>({id:p.id,name:p.name,image:p.image})) : [],
   slide:room.slide, votesCast:[...room.players.values()].filter(p=>p.votes.length===2).length,
-  results:room.stage==='results' ? [...room.players.values()].filter(p=>p.image).map(p=>({...{id:p.id,name:p.name},votes:[...room.players.values()].filter(q=>q.votes.includes(p.id)).length})).sort((a,b)=>b.votes-a.votes) : [],
+  results:room.stage==='results' ? [...room.players.values()].filter(p=>p.image).map(p=>({...{id:p.id,name:p.name,image:p.image},votes:[...room.players.values()].filter(q=>q.votes.includes(p.id)).length})).sort((a,b)=>b.votes-a.votes) : [],
   ...(isAdmin?{prompts:room.prompts.map((x,i)=>({index:i,name:x.name,text:x.text}))}:{})
 });
 const sendState = room => {
@@ -41,7 +41,7 @@ function drawDeadline(room){
 }
 function resetRoom(room){
   room.stage='lobby';room.prompt='';room.prompts=[];room.drawingEndsAt=0;room.deadlineTriggered=false;room.slide=0;
-  for(const p of room.players.values()){p.image=null;p.votes=[];p.proposed=false;}
+  for(const p of room.players.values()){p.image=null;p.submitted=false;p.removed=false;p.votes=[];p.proposed=false;}
   sendState(room);
 }
 setInterval(()=>{for(const room of rooms.values())if(room.stage==='drawing' && Date.now()>=room.drawingEndsAt)drawDeadline(room)},1000);
@@ -65,7 +65,7 @@ io.on('connection',socket=>{
       if(room.stage!=='lobby')return reply(ack,{ok:false,error:'La partida ya comenzó.'});
       if(room.players.size>=50)return reply(ack,{ok:false,error:'La sala llegó a 50 jugadores.'});
       if([...room.players.values()].some(x=>x.name.toLowerCase()===name.toLowerCase()))return reply(ack,{ok:false,error:'Ese nombre ya está en uso. Prueba otro.'});
-      p={id:token().slice(0,12),token:token(),name,sockets:new Set(),proposed:false,image:null,votes:[]};room.players.set(p.id,p);
+      p={id:token().slice(0,12),token:token(),name,sockets:new Set(),proposed:false,image:null,submitted:false,removed:false,votes:[]};room.players.set(p.id,p);
     }
     p.sockets.add(socket.id);socket.data={code:room.code,playerId:p.id,admin:false};socket.join(room.code);
     reply(ack,{ok:true,playerToken:p.token,playerId:p.id,name:p.name});sendState(room);
@@ -90,11 +90,21 @@ io.on('connection',socket=>{
   socket.on('drawing:submit',(d,ack)=>{
     const room=asRoom(socket),p=room?.players.get(socket.data.playerId);
     if(!p||room.stage!=='drawing')return reply(ack,{ok:false,error:'El tiempo de dibujar terminó.'});
-    if(p.image)return reply(ack,{ok:true});
+    if(p.submitted)return reply(ack,{ok:true});
     const img=d?.image;
     if(typeof img!=='string'||!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(img)||img.length>750000)return reply(ack,{ok:false,error:'Dibujo demasiado grande o inválido.'});
-    p.image=img;reply(ack,{ok:true});sendState(room);
-    if([...room.players.values()].every(x=>x.image))startPresentation(room);
+    p.image=img;p.submitted=true;p.removed=false;reply(ack,{ok:true});sendState(room);
+    if([...room.players.values()].every(x=>x.submitted))startPresentation(room);
+  });
+  socket.on('admin:delete-drawing',(d,ack)=>{
+    const room=asRoom(socket);
+    if(!isAdmin(socket,room)||!['drawing','presentation'].includes(room.stage))return reply(ack,{ok:false,error:'Solo puedes borrar dibujos antes de abrir la votación.'});
+    const p=room.players.get(String(d?.id||''));
+    if(!p?.image)return reply(ack,{ok:false,error:'No se encontró el dibujo.'});
+    p.image=null;p.submitted=true;p.removed=true;p.votes=[];
+    const count=[...room.players.values()].filter(x=>x.image).length;
+    room.slide=count?Math.min(room.slide,count-1):0;
+    reply(ack,{ok:true});sendState(room);
   });
   socket.on('admin:present',(_,ack)=>{
     const room=asRoom(socket);if(!isAdmin(socket,room)||room.stage!=='drawing')return reply(ack,{ok:false,error:'No disponible.'});
@@ -107,7 +117,7 @@ io.on('connection',socket=>{
   });
   socket.on('admin:voting',(_,ack)=>{
     const room=asRoom(socket);if(!isAdmin(socket,room)||room.stage!=='presentation')return reply(ack,{ok:false});
-    if([...room.players.values()].filter(x=>x.image).length<2)return reply(ack,{ok:false,error:'Se necesitan al menos dos dibujos.'});
+    if([...room.players.values()].filter(x=>x.image).length<3)return reply(ack,{ok:false,error:'Se necesitan al menos tres dibujos para que todos puedan elegir dos sin votar por el suyo.'});
     room.stage='voting';sendState(room);reply(ack,{ok:true});
   });
   socket.on('vote:cast',(d,ack)=>{
